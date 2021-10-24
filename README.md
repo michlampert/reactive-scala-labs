@@ -1,1 +1,2 @@
-# reactive-lab
+# reactive-scala-labs
+## Michał Lampert
