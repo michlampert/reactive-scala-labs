@@ -14,13 +14,13 @@ object TypedCartActor {
   case class AddItem(item: Any)                                             extends Command
   case class RemoveItem(item: Any)                                          extends Command
   case object ExpireCart                                                    extends Command
-  case class StartCheckout(orderManagerRef: ActorRef[OrderManager.Command]) extends Command
+  case class StartCheckout(orderManager: ActorRef[OrderManager.Command]) extends Command
   case object ConfirmCheckoutCancelled                                      extends Command
   case object ConfirmCheckoutClosed                                         extends Command
   case class GetItems(sender: ActorRef[Cart])                               extends Command // command made to make testing easier
 
   sealed trait Event
-  case class CheckoutStarted(checkoutRef: ActorRef[TypedCheckout.Command]) extends Event
+  case class CheckoutStarted(checkout: ActorRef[TypedCheckout.Command]) extends Event
 }
 
 class TypedCartActor {
@@ -37,6 +37,10 @@ class TypedCartActor {
   def empty: Behavior[TypedCartActor.Command] = Behaviors.receive(
     (context, msg) => msg match {
       case AddItem(item) => nonEmpty(Cart.empty.addItem(item), scheduleTimer(context))
+      case GetItems(sender) => {
+        sender ! Cart.empty
+        Behaviors.same
+      }
       case _ => Behaviors.same
     }
   )
@@ -49,8 +53,15 @@ class TypedCartActor {
         empty
       }
       case RemoveItem(item) if cart.contains(item) => nonEmpty(cart.removeItem(item), timer)
-      case StartCheckout => {
+      case GetItems(sender) => {
+        sender ! cart
+        Behaviors.same
+      }
+      case StartCheckout(sender) => {
         timer.cancel()
+        val checkout = context.spawn(new TypedCheckout(context.self).start, "checkout")
+        checkout ! TypedCheckout.StartCheckout
+        sender ! OrderManager.ConfirmCheckoutStarted(checkout)
         inCheckout(cart)
       }
       case ExpireCart => empty
@@ -61,7 +72,8 @@ class TypedCartActor {
   def inCheckout(cart: Cart): Behavior[TypedCartActor.Command] = Behaviors.receive(
     (context, msg) => msg match {
       case ConfirmCheckoutCancelled => nonEmpty(cart, scheduleTimer(context))
-      case ConfirmCheckoutClosed => empty
+      case ConfirmCheckoutClosed =>
+        empty
       case _ => Behaviors.same
     }
   )

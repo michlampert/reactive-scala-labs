@@ -7,6 +7,7 @@ import scala.language.postfixOps
 
 import scala.concurrent.duration._
 import EShop.lab3.OrderManager
+import EShop.lab3.Payment
 
 object TypedCheckout {
 
@@ -20,12 +21,12 @@ object TypedCheckout {
   case class SelectDeliveryMethod(method: String)                                            extends Command
   case object CancelCheckout                                                                 extends Command
   case object ExpireCheckout                                                                 extends Command
-  case class SelectPayment(payment: String, orderManagerRef: ActorRef[OrderManager.Command]) extends Command
+  case class SelectPayment(payment: String, orderManager: ActorRef[OrderManager.Command]) extends Command
   case object ExpirePayment                                                                  extends Command
   case object ConfirmPaymentReceived                                                         extends Command
 
   sealed trait Event
-  case object CheckOutClosed                           extends Event
+  case object CheckoutClosed                           extends Event
   case class PaymentStarted(paymentRef: ActorRef[Any]) extends Event
 }
 
@@ -64,7 +65,11 @@ class TypedCheckout(
 
   def selectingPaymentMethod(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
-      case SelectPayment(method) => processingPayment(timer)
+      case SelectPayment(method, sender) => {
+        val payment = context.spawn(new Payment(method, sender, context.self).start, "payment")
+        sender ! OrderManager.ConfirmPaymentStarted(payment)
+        processingPayment(timer)
+      }
       case CancelCheckout => cancelled
       case ExpirePayment => cancelled
       case _ => Behaviors.same
@@ -73,9 +78,18 @@ class TypedCheckout(
 
   def processingPayment(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
-    case ConfirmPaymentReceived => closed
-    case CancelCheckout => cancelled
-    case ExpirePayment => cancelled
+      case ConfirmPaymentReceived => {
+        cartActor ! TypedCartActor.ConfirmCheckoutClosed
+        closed
+      }
+      case CancelCheckout => {
+        cartActor ! TypedCartActor.ConfirmCheckoutCancelled
+        cancelled
+      }
+      case ExpirePayment => {
+        cartActor ! TypedCartActor.ConfirmCheckoutCancelled
+        cancelled
+      }
       case _ => Behaviors.same
     }
   )
