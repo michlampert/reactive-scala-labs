@@ -25,20 +25,22 @@ class OrderManagerIntegrationTest
 
   def sendMessage(
     orderManager: ActorRef[OrderManager.Command],
-    message: ActorRef[Any] => OrderManager.Command
+    message: ActorRef[Any] => OrderManager.Command,
+    tmp: String = "dupa"
   ): Unit = {
     import akka.actor.typed.scaladsl.AskPattern.Askable
+    println(tmp)
     orderManager.ask[Any](message).mapTo[OrderManager.Ack].futureValue shouldBe Done
   }
 
   it should "supervise whole order process" in {
     val orderManager = testKit.spawn(new OrderManager().start).ref
 
-    sendMessage(orderManager, AddItem("rollerblades", _))
+    sendMessage(orderManager, AddItem("rollerblades", _), "add")
 
-    sendMessage(orderManager, Buy)
+    sendMessage(orderManager, Buy, "buy")
 
-    sendMessage(orderManager, SelectDeliveryAndPaymentMethod("paypal", "inpost", _))
+    sendMessage(orderManager, SelectDeliveryAndPaymentMethod("paypal", "inpost", _), "select")
 
     sendMessage(orderManager, ref => Pay(ref))
   }

@@ -28,11 +28,15 @@ class TypedCheckoutTest
 
   it should "Send close confirmation to cart" in {
     val inbox = testKit.createTestProbe[TypedCartActor.Command]()
+
+    val inbox2 = testKit.createTestProbe[TypedCheckout.Event]()
+
     val checkout  = testKit.spawn(new TypedCheckout(inbox.ref).start, "checkout")
+    val om = testKit.spawn(new OrderManager().start, "om")
 
     checkout ! TypedCheckout.StartCheckout
     checkout ! TypedCheckout.SelectDeliveryMethod("post")
-    checkout ! TypedCheckout.SelectPayment("paypal", testKit.spawn(new OrderManager().start).ref)
+    checkout ! TypedCheckout.SelectPayment("paypal", inbox2.ref)
     checkout ! TypedCheckout.ConfirmPaymentReceived
     inbox.expectMessage(TypedCartActor.ConfirmCheckoutClosed)
 
@@ -42,9 +46,11 @@ class TypedCheckoutTest
     val checkout = BehaviorTestKit(new TypedCheckout(testKit.spawn(new TypedCartActor().start).ref).start)
     val inbox = TestInbox[OrderManager.Command]()
 
+    val inbox2 = TestInbox[TypedCheckout.Event]()
+
     checkout.run(StartCheckout)
     checkout.run(SelectDeliveryMethod("post"))
-    checkout.run(SelectPayment("paypal", inbox.ref))
+    checkout.run(SelectPayment("paypal", inbox2.ref))
     checkout.expectEffectType[Effect.Scheduled[TypedCheckout.Command]]
     checkout.expectEffectType[Effect.Scheduled[TypedCheckout.Command]]
     checkout.expectEffectType[Effect.Spawned[Payment.Command]]

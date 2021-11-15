@@ -46,7 +46,7 @@ class TypedCartTest
 
   it should "start checkout" in {
     val testKit = BehaviorTestKit(new TypedCartActor().start)
-    val inbox = TestInbox[OrderManager.Command]()
+    val inbox = TestInbox[TypedCartActor.Event]()
 
     testKit.run(TypedCartActor.AddItem("rollerblades"))
     testKit.run(TypedCartActor.StartCheckout(inbox.ref))
