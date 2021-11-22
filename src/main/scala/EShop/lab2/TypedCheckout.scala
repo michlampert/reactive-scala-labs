@@ -6,6 +6,8 @@ import akka.actor.typed.{ActorRef, Behavior}
 import scala.language.postfixOps
 
 import scala.concurrent.duration._
+import EShop.lab3.OrderManager
+import EShop.lab3.Payment
 
 object TypedCheckout {
 
@@ -15,20 +17,25 @@ object TypedCheckout {
   case class ProcessingPaymentStarted(timer: Cancellable) extends Data
 
   sealed trait Command
-  case object StartCheckout                       extends Command
-  case class SelectDeliveryMethod(method: String) extends Command
-  case object CancelCheckout                      extends Command
-  case object ExpireCheckout                      extends Command
-  case class SelectPayment(payment: String)       extends Command
-  case object ExpirePayment                       extends Command
-  case object ConfirmPaymentReceived              extends Command
+  case object StartCheckout                                                                  extends Command
+  case class SelectDeliveryMethod(method: String)                                            extends Command
+  case object CancelCheckout                                                                 extends Command
+  case object ExpireCheckout                                                                 extends Command
+  case class SelectPayment(payment: String, orderManager: ActorRef[TypedCheckout.Event]) extends Command
+  case object ExpirePayment                                                                  extends Command
+  case object ConfirmPaymentReceived                                                         extends Command
 
   sealed trait Event
-  case object CheckOutClosed                        extends Event
-  case class PaymentStarted(payment: ActorRef[Any]) extends Event
+  case object CheckoutClosed                           extends Event
+  case class PaymentStarted(paymentRef: ActorRef[Payment.Command]) extends Event
 }
 
-class TypedCheckout {
+class TypedCheckout(
+  cartActor: ActorRef[TypedCartActor.Command],
+  cartAdapter: ActorRef[TypedCartActor.Event] = null,
+  checkoutAdapter: ActorRef[TypedCheckout.Event] = null,
+  paymentAdapter: ActorRef[Payment.Event] = null
+) {
   import TypedCheckout._
 
   val checkoutTimerDuration: FiniteDuration = 1 seconds
@@ -61,7 +68,11 @@ class TypedCheckout {
 
   def selectingPaymentMethod(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
-      case SelectPayment(method) => processingPayment(timer)
+      case SelectPayment(method, sender) => {
+        val payment = context.spawn(new Payment(method, paymentAdapter, context.self, cartAdapter, checkoutAdapter, paymentAdapter).start, "payment")
+        sender ! PaymentStarted(payment)
+        processingPayment(timer)
+      }
       case CancelCheckout => cancelled
       case ExpirePayment => cancelled
       case _ => Behaviors.same
@@ -70,9 +81,18 @@ class TypedCheckout {
 
   def processingPayment(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
-    case ConfirmPaymentReceived => closed
-    case CancelCheckout => cancelled
-    case ExpirePayment => cancelled
+      case ConfirmPaymentReceived => {
+        cartActor ! TypedCartActor.ConfirmCheckoutClosed
+        closed
+      }
+      case CancelCheckout => {
+        cartActor ! TypedCartActor.ConfirmCheckoutCancelled
+        cancelled
+      }
+      case ExpirePayment => {
+        cartActor ! TypedCartActor.ConfirmCheckoutCancelled
+        cancelled
+      }
       case _ => Behaviors.same
     }
   )
