@@ -12,6 +12,9 @@ object Payment {
   
   sealed trait Event
   case object PaymentReceived extends Event
+
+  case object PaymentConfirmed extends Event
+
 }
 
 class Payment(
