@@ -11,7 +11,7 @@ import akka.actor.testkit.typed.scaladsl.TestInbox
 import akka.actor.typed.ActorRef
 import akka.actor.testkit.typed.Effect
 
-import akka.actor.typed.scaladsl.{Behaviors}
+import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorRef, Behavior}
 
 class TypedCheckoutTest
@@ -31,8 +31,8 @@ class TypedCheckoutTest
 
     val inbox2 = testKit.createTestProbe[TypedCheckout.Event]()
 
-    val checkout  = testKit.spawn(new TypedCheckout(inbox.ref).start, "checkout")
-    val om = testKit.spawn(new OrderManager().start, "om")
+    val checkout = testKit.spawn(new TypedCheckout(inbox.ref).start, "checkout")
+    val om       = testKit.spawn(new OrderManager().start, "om")
 
     checkout ! TypedCheckout.StartCheckout
     checkout ! TypedCheckout.SelectDeliveryMethod("post")
@@ -44,7 +44,7 @@ class TypedCheckoutTest
 
   it should "start payment" in {
     val checkout = BehaviorTestKit(new TypedCheckout(testKit.spawn(new TypedCartActor().start).ref).start)
-    val inbox = TestInbox[OrderManager.Command]()
+    val inbox    = TestInbox[OrderManager.Command]()
 
     val inbox2 = TestInbox[TypedCheckout.Event]()
 

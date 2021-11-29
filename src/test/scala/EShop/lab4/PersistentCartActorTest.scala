@@ -1,6 +1,8 @@
 package EShop.lab4
 
-import EShop.lab3.OrderManager
+import EShop.lab3.{OrderManager, Payment}
+import EShop.lab2.{TypedCartActor, TypedCheckout}
+import EShop.lab4.PersistentCartActor
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.persistence.testkit.scaladsl.EventSourcedBehaviorTestKit
 import akka.persistence.typed.PersistenceId
@@ -17,25 +19,32 @@ class PersistentCartActorTest
   with BeforeAndAfterAll
   with BeforeAndAfterEach {
 
-  override def afterAll: Unit = testKit.shutdownTestKit()
+  override def afterAll(): Unit = testKit.shutdownTestKit()
 
   import EShop.lab2.TypedCartActor._
 
-  private val eventSourcedTestKit =
+  private val eventSourcedTestKit = {
+    val cartListener      = testKit.createTestProbe[TypedCartActor.Event].ref
+    val checkoutListener  = testKit.createTestProbe[TypedCheckout.Event].ref
+    val paymentListener   = testKit.createTestProbe[Payment.Event].ref
+    val persistenceId     = generatePersistenceId()
+    val cartTimerDuration = 1.seconds
+
     EventSourcedBehaviorTestKit[Command, Event, State](
       system,
-      new PersistentCartActor {
+      new PersistentCartActor(cartListener, checkoutListener, paymentListener) {
         override val cartTimerDuration: FiniteDuration = 1.second
       }.apply(generatePersistenceId),
       SerializationSettings.disabled
     )
+  }
 
   override protected def beforeEach(): Unit = {
     super.beforeEach()
     eventSourcedTestKit.clear()
   }
 
-  def generatePersistenceId: PersistenceId = PersistenceId.ofUniqueId(Random.alphanumeric.take(256).mkString)
+  def generatePersistenceId(): PersistenceId = PersistenceId.ofUniqueId(Random.alphanumeric.take(256).mkString)
 
   it should "change state after adding first item to the cart" in {
     val result = eventSourcedTestKit.runCommand(AddItem("Hamlet"))
@@ -53,7 +62,7 @@ class PersistentCartActorTest
     val resultRemove = eventSourcedTestKit.runCommand(RemoveItem("Storm"))
 
     resultRemove.event shouldBe CartEmptied
-    resultRemove.state shouldBe Empty
+    resultRemove.state.isInstanceOf[Empty] shouldBe true
   }
 
   it should "contain one item after adding new item and removing not existing one" in {
@@ -75,7 +84,7 @@ class PersistentCartActorTest
     resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
 
     val resultStartCheckout =
-      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[OrderManager.Command]().ref))
+      eventSourcedTestKit.runCommand(StartCheckout)
 
     resultStartCheckout.event.isInstanceOf[CheckoutStarted] shouldBe true
     resultStartCheckout.state.isInstanceOf[InCheckout] shouldBe true
@@ -88,7 +97,7 @@ class PersistentCartActorTest
     resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
 
     val resultStartCheckout =
-      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[OrderManager.Command]().ref))
+      eventSourcedTestKit.runCommand(StartCheckout)
 
     resultStartCheckout.event.isInstanceOf[CheckoutStarted] shouldBe true
     resultStartCheckout.state.isInstanceOf[InCheckout] shouldBe true
@@ -107,7 +116,7 @@ class PersistentCartActorTest
     resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
 
     val resultStartCheckout =
-      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[OrderManager.Command]().ref))
+      eventSourcedTestKit.runCommand(StartCheckout)
 
     resultStartCheckout.event.isInstanceOf[CheckoutStarted] shouldBe true
     resultStartCheckout.state.isInstanceOf[InCheckout] shouldBe true
@@ -116,7 +125,7 @@ class PersistentCartActorTest
       eventSourcedTestKit.runCommand(ConfirmCheckoutClosed)
 
     resultCloseCheckout.event shouldBe CheckoutClosed
-    resultCloseCheckout.state shouldBe Empty
+    resultCloseCheckout.state.isInstanceOf[Empty] shouldBe true
   }
 
   it should "not add items when in checkout" in {
@@ -126,7 +135,7 @@ class PersistentCartActorTest
     resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
 
     val resultStartCheckout =
-      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[OrderManager.Command]().ref))
+      eventSourcedTestKit.runCommand(StartCheckout)
 
     resultStartCheckout.event.isInstanceOf[CheckoutStarted] shouldBe true
     resultStartCheckout.state.isInstanceOf[InCheckout] shouldBe true
@@ -139,10 +148,10 @@ class PersistentCartActorTest
 
   it should "not change state to inCheckout from empty" in {
     val resultStartCheckout =
-      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[OrderManager.Command]().ref))
+      eventSourcedTestKit.runCommand(ConfirmCheckoutCancelled)
 
     resultStartCheckout.hasNoEvents shouldBe true
-    resultStartCheckout.state shouldBe Empty
+    resultStartCheckout.state.isInstanceOf[Empty] shouldBe true
   }
 
   it should "expire and back to empty state after given time" in {
@@ -156,6 +165,38 @@ class PersistentCartActorTest
     val resultAdd2 = eventSourcedTestKit.runCommand(RemoveItem("King Lear"))
 
     resultAdd2.hasNoEvents shouldBe true
-    resultAdd2.state shouldBe Empty
+    resultAdd2.state.isInstanceOf[Empty] shouldBe true
+  }
+
+  it should "be in same state after restart" in {
+    val resultAdd = eventSourcedTestKit.runCommand(AddItem("King Lear"))
+
+    resultAdd.event.isInstanceOf[ItemAdded] shouldBe true
+    resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
+
+    val resultRestart = eventSourcedTestKit.restart()
+
+    val resultStartCheckout =
+      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[TypedCartActor.Event]().ref))
+
+    resultStartCheckout.event.isInstanceOf[CheckoutStarted] shouldBe true
+    resultStartCheckout.state.isInstanceOf[InCheckout] shouldBe true
+  }
+
+  it should "have working timer after restart" in {
+    val resultAdd = eventSourcedTestKit.runCommand(AddItem("King Lear"))
+
+    resultAdd.event.isInstanceOf[ItemAdded] shouldBe true
+    resultAdd.state.isInstanceOf[NonEmpty] shouldBe true
+
+    val resultRestart = eventSourcedTestKit.restart()
+
+    Thread.sleep(2000)
+
+    val resultStartCheckout =
+      eventSourcedTestKit.runCommand(StartCheckout(testKit.createTestProbe[TypedCartActor.Event]().ref))
+
+    resultStartCheckout.hasNoEvents shouldBe true
+    resultStartCheckout.state.isInstanceOf[Empty] shouldBe true
   }
 }

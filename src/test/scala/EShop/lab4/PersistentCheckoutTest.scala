@@ -1,7 +1,7 @@
 package EShop.lab4
 
-import EShop.lab2.TypedCartActor
-import EShop.lab3.OrderManager
+import EShop.lab2.{TypedCartActor, TypedCheckout}
+import EShop.lab3.{OrderManager, Payment}
 import akka.actor.testkit.typed.scaladsl.ScalaTestWithActorTestKit
 import akka.persistence.testkit.scaladsl.EventSourcedBehaviorTestKit
 import akka.persistence.testkit.scaladsl.EventSourcedBehaviorTestKit.SerializationSettings
@@ -18,22 +18,29 @@ class PersistentCheckoutTest
   with BeforeAndAfterAll
   with BeforeAndAfterEach {
 
-  override def afterAll: Unit = testKit.shutdownTestKit()
+  override def afterAll(): Unit = testKit.shutdownTestKit()
 
   import EShop.lab2.TypedCheckout._
 
   private val cartActorProbe = testKit.createTestProbe[TypedCartActor.Command]()
 
-  private val orderManagerProbe = testKit.createTestProbe[OrderManager.Command]
+  private val orderManagerProbe = testKit.createTestProbe[Event]
 
-  private val eventSourcedTestKit =
+  private val eventSourcedTestKit = {
+    val cartRef          = testKit.createTestProbe[TypedCartActor.Command].ref
+    val cartListener     = testKit.createTestProbe[TypedCartActor.Event].ref
+    val checkoutListener = testKit.createTestProbe[TypedCheckout.Event].ref
+    val paymentListener  = testKit.createTestProbe[Payment.Event].ref
+    val persistenceId    = generatePersistenceId()
+
     EventSourcedBehaviorTestKit[Command, Event, State](
       system,
-      new PersistentCheckout {
+      new PersistentCheckout(cartRef, cartListener, checkoutListener, paymentListener) {
         override val timerDuration: FiniteDuration = 1.second
       }.apply(cartActorProbe.ref, generatePersistenceId),
       SerializationSettings.disabled
     )
+  }
 
   override protected def beforeEach(): Unit = {
     super.beforeEach()
@@ -43,7 +50,7 @@ class PersistentCheckoutTest
   val deliveryMethod = "post"
   val paymentMethod  = "paypal"
 
-  def generatePersistenceId: PersistenceId = PersistenceId.ofUniqueId(Random.alphanumeric.take(256).mkString)
+  def generatePersistenceId(): PersistenceId = PersistenceId.ofUniqueId(Random.alphanumeric.take(256).mkString)
 
   it should "be in selectingDelivery state after checkout start" in {
     val resultStartCheckout = eventSourcedTestKit.runCommand(StartCheckout)
@@ -207,7 +214,7 @@ class PersistentCheckoutTest
 
     val resultReceivePayment = eventSourcedTestKit.runCommand(ConfirmPaymentReceived)
 
-    resultReceivePayment.event shouldBe CheckOutClosed
+    resultReceivePayment.event shouldBe CheckoutClosed
     resultReceivePayment.state shouldBe Closed
   }
 
@@ -229,12 +236,56 @@ class PersistentCheckoutTest
 
     val resultReceivePayment = eventSourcedTestKit.runCommand(ConfirmPaymentReceived)
 
-    resultReceivePayment.event shouldBe CheckOutClosed
+    resultReceivePayment.event shouldBe CheckoutClosed
     resultReceivePayment.state shouldBe Closed
 
     val resultCancelCheckout = eventSourcedTestKit.runCommand(CancelCheckout)
 
     resultCancelCheckout.hasNoEvents shouldBe true
     resultCancelCheckout.state shouldBe Closed
+  }
+
+  it should "be in same state after restart" in {
+    val resultStartCheckout = eventSourcedTestKit.runCommand(StartCheckout)
+
+    resultStartCheckout.event shouldBe CheckoutStarted
+    resultStartCheckout.state.isInstanceOf[SelectingDelivery] shouldBe true
+
+    val resultSelectDelivery = eventSourcedTestKit.runCommand(SelectDeliveryMethod(deliveryMethod))
+
+    resultSelectDelivery.event.isInstanceOf[DeliveryMethodSelected] shouldBe true
+    resultSelectDelivery.state.isInstanceOf[SelectingPaymentMethod] shouldBe true
+
+    val resultRestarted = eventSourcedTestKit.restart()
+    resultRestarted.state.isInstanceOf[SelectingPaymentMethod] shouldBe true
+
+    val resultSelectPayment =
+      eventSourcedTestKit.runCommand(SelectPayment(paymentMethod, orderManagerProbe.ref))
+
+    resultSelectPayment.event.isInstanceOf[PaymentStarted] shouldBe true
+    resultSelectPayment.state.isInstanceOf[ProcessingPayment] shouldBe true
+  }
+
+  it should "have working checkout timer after restart in selecting payment state" in {
+    val resultStartCheckout = eventSourcedTestKit.runCommand(StartCheckout)
+
+    resultStartCheckout.event shouldBe CheckoutStarted
+    resultStartCheckout.state.isInstanceOf[SelectingDelivery] shouldBe true
+
+    val resultSelectDelivery = eventSourcedTestKit.runCommand(SelectDeliveryMethod(deliveryMethod))
+
+    resultSelectDelivery.event.isInstanceOf[DeliveryMethodSelected] shouldBe true
+    resultSelectDelivery.state.isInstanceOf[SelectingPaymentMethod] shouldBe true
+
+    val resultRestarted = eventSourcedTestKit.restart()
+    resultRestarted.state.isInstanceOf[SelectingPaymentMethod] shouldBe true
+
+    Thread.sleep(2000)
+
+    val resultSelectPayment =
+      eventSourcedTestKit.runCommand(SelectPayment(paymentMethod, orderManagerProbe.ref))
+
+    resultSelectPayment.hasNoEvents shouldBe true
+    resultSelectPayment.state shouldBe Cancelled
   }
 }
